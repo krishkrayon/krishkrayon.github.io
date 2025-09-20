@@ -1,0 +1,115 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Remote Relay Control (MQTT.js)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 24px; }
+    .banner{padding:10px;border-radius:8px;margin-bottom:16px}
+    .ok{background:#e8f5e9} .bad{background:#ffebee}
+    #log { white-space: pre-wrap; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px;
+           background:#f7f7f7; padding:12px; border-radius:8px; margin-top:16px; }
+    .g{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}
+    .c{border:1px solid #ddd;border-radius:12px;padding:16px;box-shadow:0 2px 6px rgba(0,0,0,.05)}
+    .r{display:flex;align-items:center;justify-content:space-between}
+    .sw{position:relative;display:inline-block;width:60px;height:32px}
+    .sw input{display:none}
+    .sl{position:absolute;cursor:pointer;inset:0;background:#ccc;transition:.2s;border-radius:999px}
+    .sl:before{content:"";position:absolute;height:24px;width:24px;left:4px;top:4px;background:#fff;transition:.2s;border-radius:50%;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+    input:checked + .sl{background:#4caf50}
+    input:checked + .sl:before{transform:translateX(28px)}
+    .s{font-size:12px;color:#555;margin-top:6px}
+  </style>
+</head>
+<body>
+  <h1>Remote Relay Control</h1>
+  <div id="status" class="banner bad">Loading…</div>
+  <div class="g">
+    <div class="c"><div class="r"><div>Relay 1</div><label class="sw"><input id="r0" type="checkbox"><span class="sl"></span></label></div><div class="s" id="s0">OFF</div></div>
+    <div class="c"><div class="r"><div>Relay 2</div><label class="sw"><input id="r1" type="checkbox"><span class="sl"></span></label></div><div class="s" id="s1">OFF</div></div>
+    <div class="c"><div class="r"><div>Relay 3</div><label class="sw"><input id="r2" type="checkbox"><span class="sl"></span></label></div><div class="s" id="s2">OFF</div></div>
+    <div class="c"><div class="r"><div>Relay 4</div><label class="sw"><input id="r3" type="checkbox"><span class="sl"></span></label></div><div class="s" id="s3">OFF</div></div>
+  </div>
+  <h3>Logs</h3>
+  <div id="log"></div>
+
+  <!-- Load MQTT.js locally (renamed to avoid blockers) -->
+  <script src="./m.js"></script>
+  <script>
+    const statusEl = document.getElementById('status');
+    const logEl = document.getElementById('log');
+    const log = (...a)=>{ logEl.textContent += a.join(' ') + "\n"; console.log(...a); };
+    const banner = (ok,t)=>{ statusEl.textContent=t; statusEl.className=`banner ${ok?'ok':'bad'}`; };
+
+    // Verify library
+    if (!window.mqtt) {
+      banner(false, "MQTT.js not loaded");
+      log("MQTT.js missing. Open http://127.0.0.1:8081/m.js to confirm it serves JS.");
+      throw new Error("MQTT.js not loaded");
+    }
+
+    // MUST match your ESP32 sketch
+    const DEVICE_ID = "esp32-relay-kr-01";
+    const BASE = `iot/relay/${DEVICE_ID}`;
+    const T_STATE  = `${BASE}/state`;
+    const T_STATUS = `${BASE}/status`;
+    const T_CMD    = (ch)=> `${BASE}/cmd/${ch}`;
+
+    // Connect via WSS (HiveMQ public)
+    const url = "wss://broker.hivemq.com:8884/mqtt";
+    const clientId = "web-"+Math.random().toString(16).slice(2);
+    log("Connecting:", url, "clientId:", clientId);
+
+    const client = mqtt.connect(url, {
+      clientId,
+      clean: true,
+      connectTimeout: 8000,
+      reconnectPeriod: 2000
+      // If you later use a secured broker: username, password, etc.
+    });
+
+    client.on('connect', () => {
+      banner(true, "Connected to broker");
+      log("Connected");
+      client.subscribe([T_STATUS, T_STATE], (err) => {
+        if (err) log("Subscribe error:", err.message);
+        else log("Subscribed:", T_STATUS, T_STATE);
+      });
+    });
+
+    client.on('reconnect', ()=> log("Reconnecting…"));
+    client.on('close', ()=> { banner(false, "Disconnected"); log("Closed"); });
+    client.on('error', (e)=> log("Error:", e.message));
+    client.on('message', (topic, payload)=>{
+      const text = payload.toString();
+      log("RX", topic, text);
+      if (topic === T_STATUS) {
+        banner(text === "online", "Device " + text);
+      } else if (topic === T_STATE) {
+        try {
+          const j = JSON.parse(text);
+          (j.states||[]).forEach((v,i)=>{
+            const c = document.getElementById('r'+i);
+            const s = document.getElementById('s'+i);
+            if (c) c.checked = !!(+v);
+            if (s) s.textContent = (+v) ? "ON" : "OFF";
+          });
+        } catch(e){ log("JSON parse:", e.message); }
+      }
+    });
+
+    // UI -> MQTT
+    [0,1,2,3].forEach(i=>{
+      const el = document.getElementById('r'+i);
+      el.addEventListener('change', ()=>{
+        const val = el.checked ? "1" : "0";
+        client.publish(T_CMD(i), val, { qos: 0, retain: false }, (err)=>{
+          if (err) log("Publish error:", err.message);
+          else log("TX", T_CMD(i), val);
+        });
+      });
+    });
+  </script>
+</body>
+</html>
